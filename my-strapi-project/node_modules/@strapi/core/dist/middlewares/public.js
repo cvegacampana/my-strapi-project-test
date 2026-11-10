@@ -1,0 +1,42 @@
+'use strict';
+
+var _ = require('lodash');
+var koaStatic = require('koa-static');
+
+function _interopDefault (e) { return e && e.__esModule ? e : { default: e }; }
+
+var koaStatic__default = /*#__PURE__*/_interopDefault(koaStatic);
+
+const defaults = {
+    maxAge: 60000
+};
+const publicStatic = (config, { strapi })=>{
+    const { maxAge } = _.defaultsDeep({}, config, defaults);
+    strapi.server.routes([
+        {
+            method: 'GET',
+            path: '/',
+            handler (ctx) {
+                ctx.redirect(strapi.config.get('admin.url', '/admin'));
+            },
+            config: {
+                auth: false
+            }
+        },
+        // All other public GET-routes except /uploads/(.*) which is handled in upload middleware
+        {
+            method: 'GET',
+            path: '/((?!uploads/).+)',
+            handler: koaStatic__default.default(strapi.dirs.static.public, {
+                maxage: maxAge,
+                defer: true
+            }),
+            config: {
+                auth: false
+            }
+        }
+    ]);
+};
+
+exports.publicStatic = publicStatic;
+//# sourceMappingURL=public.js.map

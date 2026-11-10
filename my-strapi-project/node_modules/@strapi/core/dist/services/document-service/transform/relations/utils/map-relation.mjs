@@ -1,0 +1,140 @@
+import { curry, isObject } from 'lodash';
+import { async, traverseEntity } from '@strapi/utils';
+
+/**
+ * Whether a shorthand relation value is a numeric entry id (as opposed to a documentId).
+ *
+ * A string only counts as numeric when it is made of digits *entirely*. `parseInt` must not be
+ * used here: it stops at the first non-digit character, so a documentId that happens to start
+ * with a digit (e.g. `'3d52c864df72fcc68ab62ebe'` -> `3`) would be misclassified as an id.
+ */ const isNumeric = (value)=>{
+    if (typeof value === 'number') return Number.isFinite(value);
+    if (typeof value === 'string') return /^\d+$/.test(value);
+    return false; // Arrays (e.g. [1, 'docId']), objects, etc.
+};
+const toArray = (value)=>{
+    // Keep value as it is if it's a nullish value
+    if (value == null) return value;
+    if (Array.isArray(value)) return value;
+    return [
+        value
+    ];
+};
+/**
+ * There are multiple ways to create Strapi relations.
+ * This is a utility to traverse and transform relation data
+ *
+ *
+ * For consistency and ease of use, the response will always be an object with the following shape:
+ * { set: [{...}], connect: [{...}], disconnect: [{...}] }
+ *
+ * @example
+ * transformRelationData({
+ *  onLongHand: (relation) => {
+ *    // Change the id of the relation
+ *    return { id: 'other' };
+ *  },
+ * }, relation)
+ */ const mapRelation = async (callback, rel, isRecursive = false)=>{
+    let relation = rel;
+    const wrapInSet = (value)=>{
+        // Ignore wrapping if it's a recursive call
+        if (isRecursive) {
+            return value;
+        }
+        return {
+            set: toArray(value)
+        };
+    };
+    // undefined | null
+    if (relation == null) {
+        return callback(relation);
+    }
+    // LongHand[] | ShortHand[]
+    if (Array.isArray(relation)) {
+        return async.map(relation, (r)=>mapRelation(callback, r, true)).then((result)=>result.flat().filter(Boolean)).then(wrapInSet);
+    }
+    // LongHand
+    if (isObject(relation)) {
+        // { id: 1 } || { documentId: 1 }
+        if ('id' in relation || 'documentId' in relation) {
+            const result = await callback(relation);
+            return wrapInSet(result);
+        }
+        // If not connecting anything, return default visitor
+        if (!relation.set && !relation.disconnect && !relation.connect) {
+            return callback(relation);
+        }
+        // { set }
+        if (relation.set) {
+            const set = await mapRelation(callback, relation.set, true);
+            relation = {
+                ...relation,
+                set: toArray(set)
+            };
+        }
+        // { disconnect}
+        if (relation.disconnect) {
+            const disconnect = await mapRelation(callback, relation.disconnect, true);
+            relation = {
+                ...relation,
+                disconnect: toArray(disconnect)
+            };
+        }
+        // { connect }
+        if (relation.connect) {
+            // Transform the relation to connect
+            const connect = await mapRelation(callback, relation.connect, true);
+            relation = {
+                ...relation,
+                connect: toArray(connect)
+            };
+        }
+        return relation;
+    }
+    // ShortHand
+    if (isNumeric(relation)) {
+        const result = await callback({
+            id: relation
+        });
+        return wrapInSet(result);
+    }
+    if (typeof relation === 'string') {
+        const result = await callback({
+            documentId: relation
+        });
+        return wrapInSet(result);
+    }
+    // Anything else
+    return callback(relation);
+};
+/**
+ * Utility function, same as `traverseEntity` but only for relations and, when requested, media.
+ */ const traverseEntityRelations = async (visitor, options, data)=>{
+    const { includeMedia = false, ...traverseOptions } = options;
+    return traverseEntity(async (options, utils)=>{
+        const { attribute } = options;
+        if (!attribute) {
+            return;
+        }
+        if (attribute.type !== 'relation' && !(includeMedia && attribute.type === 'media')) {
+            return;
+        }
+        if (attribute.type === 'relation') {
+            // TODO: Handle join columns
+            if (attribute.useJoinTable === false) {
+                return;
+            }
+            // morphToOne uses morphColumn (inline columns on the entity), handled directly in processData
+            if (attribute.relation === 'morphToOne') {
+                return;
+            }
+        }
+        return visitor(options, utils);
+    }, traverseOptions, data);
+};
+const mapRelationCurried = curry(mapRelation);
+const traverseEntityRelationsCurried = curry(traverseEntityRelations);
+
+export { mapRelationCurried as mapRelation, traverseEntityRelationsCurried as traverseEntityRelations };
+//# sourceMappingURL=map-relation.mjs.map

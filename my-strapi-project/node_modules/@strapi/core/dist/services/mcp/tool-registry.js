@@ -1,0 +1,170 @@
+'use strict';
+
+var McpCapabilityRegistry = require('./internal/McpCapabilityRegistry.js');
+var wrapCapabilityHandlerForMetrics = require('./metrics/wrapCapabilityHandlerForMetrics.js');
+var createSafeCapabilityRegistration = require('./utils/createSafeCapabilityRegistration.js');
+var createMcpCapabilityHandlerContext = require('./utils/createMcpCapabilityHandlerContext.js');
+var toSdkMcpCapabilityResult = require('./utils/toSdkMcpCapabilityResult.js');
+
+function _class_private_field_loose_base(receiver, privateKey) {
+    if (!Object.prototype.hasOwnProperty.call(receiver, privateKey)) {
+        throw new TypeError("attempted to use private field on non-instance");
+    }
+    return receiver;
+}
+var id = 0;
+function _class_private_field_loose_key(name) {
+    return "__private_" + id++ + "_" + name;
+}
+/**
+ * Defines a Strapi MCP tool with full type inference, ready to pass to
+ * `strapi.ai.mcp.registerTool()`. Exposed publicly as `ai.mcp.defineTool`.
+ *
+ * The returned value is the definition unchanged — this builder only exists to
+ * infer the `name`, input/output schemas and handler types, and to narrow the
+ * access variant (`devModeOnly` vs `auth`) so the result is directly assignable
+ * to `registerTool`.
+ *
+ * @param tool - The tool definition. Provide either `devModeOnly: true` (dev-only,
+ * no auth) or an `auth` policy set — never both.
+ * @returns The same definition, with its access variant narrowed.
+ *
+ * @example
+ * ```ts
+ * import { ai } from '@strapi/strapi';
+ * import { z } from '@strapi/utils';
+ *
+ * const greet = ai.mcp.defineTool({
+ *   name: 'greet',
+ *   title: 'Greet',
+ *   description: 'Greets a user by name',
+ *   devModeOnly: true,
+ *   resolveInputSchema: () => z.object({ name: z.string() }),
+ *   resolveOutputSchema: () => z.object({ message: z.string() }),
+ *   createHandler: (strapi) => async ({ args }) => {
+ *     const message = `Hello, ${args.name}!`;
+ *     return { content: [{ type: 'text', text: message }], structuredContent: { message } };
+ *   },
+ * });
+ *
+ * // later, in register() or bootstrap():
+ * strapi.ai.mcp.registerTool(greet);
+ * ```
+ */ const makeMcpToolDefinition = (definition)=>definition;
+var _strapi = /*#__PURE__*/ _class_private_field_loose_key("_strapi"), _ability = /*#__PURE__*/ _class_private_field_loose_key("_ability"), _user = /*#__PURE__*/ _class_private_field_loose_key("_user"), _shouldResolveSchemas = /*#__PURE__*/ _class_private_field_loose_key("_shouldResolveSchemas");
+class McpToolRegistry extends McpCapabilityRegistry.McpCapabilityRegistryBase {
+    bind(mcpServer) {
+        const strapi = _class_private_field_loose_base(this, _strapi)[_strapi];
+        super.register((definition)=>{
+            const { name, title, description, resolveInputSchema, resolveOutputSchema, createHandler } = definition;
+            if (_class_private_field_loose_base(this, _shouldResolveSchemas)[_shouldResolveSchemas](definition) === false) {
+                // Keep the tool known to the SDK so a call answers `Tool <name> disabled` (no permission)
+                // rather than `not found`. The request never lists nor runs it, so no schema is needed.
+                const unavailableResult = {
+                    content: [
+                        {
+                            type: 'text',
+                            text: `Tool "${name}" is not available in this request`
+                        }
+                    ],
+                    isError: true
+                };
+                return createSafeCapabilityRegistration.createSafeCapabilityRegistration({
+                    strapi,
+                    capabilityType: 'Tool',
+                    name,
+                    createHandler: ()=>async ()=>unavailableResult,
+                    createFallbackHandler: ()=>async ()=>unavailableResult,
+                    createErrorResult: ()=>unavailableResult,
+                    registerWithSdk: (safeHandler)=>mcpServer.registerTool(name, {
+                            title,
+                            description
+                        }, safeHandler)
+                });
+            }
+            // Bind the session ability and token owner into the handler context so handlers can enforce
+            // field-level and entity-level permission checks and set creator fields.
+            const context = {
+                userAbility: _class_private_field_loose_base(this, _ability)[_ability],
+                user: _class_private_field_loose_base(this, _user)[_user]
+            };
+            const createHandlerWithContext = (strapi)=>createHandler(strapi, context);
+            return createSafeCapabilityRegistration.createSafeCapabilityRegistration({
+                strapi,
+                capabilityType: 'Tool',
+                name,
+                createHandler: createHandlerWithContext,
+                createFallbackHandler (errorMessage) {
+                    return async ()=>({
+                            content: [
+                                {
+                                    type: 'text',
+                                    text: `Tool "${name}" failed to initialize: ${errorMessage}`
+                                }
+                            ],
+                            isError: true
+                        });
+                },
+                createErrorResult (error) {
+                    return {
+                        content: [
+                            {
+                                type: 'text',
+                                text: `Tool "${name}" execution failed: ${error.message}`
+                            }
+                        ],
+                        isError: true
+                    };
+                },
+                registerWithSdk (safeHandler) {
+                    const inputSchema = resolveInputSchema !== undefined ? resolveInputSchema(context) : undefined;
+                    const outputSchema = resolveOutputSchema(context);
+                    if (inputSchema !== undefined) {
+                        // Adapt from Strapi's object parameter to the SDK's positional callback.
+                        const sdkHandler = wrapCapabilityHandlerForMetrics.wrapCapabilityHandlerForMetrics(strapi, 'tool', name, definition.telemetry, async (args, context)=>toSdkMcpCapabilityResult.toSdkToolResult(await safeHandler({
+                                args,
+                                extra: createMcpCapabilityHandlerContext.createMcpCapabilityHandlerContext(context)
+                            })));
+                        return mcpServer.registerTool(name, {
+                            title,
+                            description,
+                            inputSchema,
+                            outputSchema
+                        }, sdkHandler);
+                    }
+                    const sdkHandler = wrapCapabilityHandlerForMetrics.wrapCapabilityHandlerForMetrics(strapi, 'tool', name, definition.telemetry, async (context)=>toSdkMcpCapabilityResult.toSdkToolResult(await safeHandler({
+                            extra: createMcpCapabilityHandlerContext.createMcpCapabilityHandlerContext(context)
+                        })));
+                    return mcpServer.registerTool(name, {
+                        title,
+                        description,
+                        outputSchema
+                    }, sdkHandler);
+                }
+            });
+        });
+    }
+    constructor(ctx){
+        super(ctx.definitions), Object.defineProperty(this, _strapi, {
+            writable: true,
+            value: void 0
+        }), Object.defineProperty(this, _ability, {
+            writable: true,
+            value: void 0
+        }), Object.defineProperty(this, _user, {
+            writable: true,
+            value: void 0
+        }), Object.defineProperty(this, _shouldResolveSchemas, {
+            writable: true,
+            value: void 0
+        });
+        _class_private_field_loose_base(this, _strapi)[_strapi] = ctx.strapi;
+        _class_private_field_loose_base(this, _ability)[_ability] = ctx.ability;
+        _class_private_field_loose_base(this, _user)[_user] = ctx.user;
+        _class_private_field_loose_base(this, _shouldResolveSchemas)[_shouldResolveSchemas] = ctx.shouldResolveSchemas ?? (()=>true);
+    }
+}
+
+exports.McpToolRegistry = McpToolRegistry;
+exports.makeMcpToolDefinition = makeMcpToolDefinition;
+//# sourceMappingURL=tool-registry.js.map

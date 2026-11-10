@@ -1,0 +1,1 @@
+{"version":3,"file":"get-user-plugins-config.d.ts","sourceRoot":"","sources":["../../../src/loaders/plugins/get-user-plugins-config.ts"],"names":[],"mappings":"AAKA,MAAM,WAAW,iBAAiB;IAChC,OAAO,EAAE,OAAO,CAAC;IACjB,OAAO,EAAE,MAAM,CAAC;IAChB,QAAQ,EAAE,OAAO,CAAC;CACnB;AAED;;;;GAIG;AACH,eAAO,MAAM,oBAAoB,4DAqBhC,CAAC"}

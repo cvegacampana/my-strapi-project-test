@@ -1,0 +1,190 @@
+import { contentTypes } from '@strapi/utils';
+import { documentResponseSchema, collectionResponseSchema } from './response.mjs';
+import 'zod/v4';
+import { CoreContentTypeRouteValidator } from './validation/content-type.mjs';
+
+const createRoutes = ({ strapi: strapi1, contentType })=>{
+    if (contentTypes.isSingleType(contentType)) {
+        return getSingleTypeRoutes(contentType, strapi1);
+    }
+    return getCollectionTypeRoutes(contentType, strapi1);
+};
+const getSingleTypeRoutes = (schema, strapi1)=>{
+    const { uid, info } = schema;
+    const validator = new CoreContentTypeRouteValidator(strapi1, uid);
+    const conditionalQueryParams = getConditionalQueryParams(schema);
+    return {
+        find: {
+            method: 'GET',
+            path: `/${info.singularName}`,
+            handler: `${uid}.find`,
+            request: {
+                query: validator.queryParams([
+                    'fields',
+                    'populate',
+                    'filters',
+                    ...conditionalQueryParams
+                ])
+            },
+            response: documentResponseSchema(validator.document),
+            config: {}
+        },
+        update: {
+            method: 'PUT',
+            path: `/${info.singularName}`,
+            handler: `${uid}.update`,
+            request: {
+                query: validator.queryParams([
+                    'fields',
+                    'populate',
+                    ...conditionalQueryParams
+                ]),
+                body: {
+                    'application/json': validator.partialBody
+                }
+            },
+            response: documentResponseSchema(validator.document),
+            config: {}
+        },
+        delete: {
+            method: 'DELETE',
+            path: `/${info.singularName}`,
+            handler: `${uid}.delete`,
+            request: {
+                query: validator.queryParams([
+                    'fields',
+                    'populate',
+                    ...conditionalQueryParams
+                ])
+            },
+            response: documentResponseSchema(validator.document),
+            config: {}
+        }
+    };
+};
+const getCollectionTypeRoutes = (schema, strapi1)=>{
+    const { uid, info } = schema;
+    const validator = new CoreContentTypeRouteValidator(strapi1, uid);
+    const conditionalQueryParams = getConditionalQueryParams(schema);
+    return {
+        find: {
+            method: 'GET',
+            path: `/${info.pluralName}`,
+            handler: `${uid}.find`,
+            request: {
+                query: validator.queryParams([
+                    'fields',
+                    'filters',
+                    '_q',
+                    'pagination',
+                    'sort',
+                    'populate',
+                    ...conditionalQueryParams
+                ])
+            },
+            response: collectionResponseSchema(validator.documents),
+            config: {}
+        },
+        findOne: {
+            method: 'GET',
+            path: `/${info.pluralName}/:id`,
+            handler: `${uid}.findOne`,
+            request: {
+                params: {
+                    id: validator.documentID
+                },
+                query: validator.queryParams([
+                    'fields',
+                    'populate',
+                    'filters',
+                    'sort',
+                    ...conditionalQueryParams
+                ])
+            },
+            response: documentResponseSchema(validator.document)
+        },
+        create: {
+            method: 'POST',
+            path: `/${info.pluralName}`,
+            handler: `${uid}.create`,
+            request: {
+                query: validator.queryParams([
+                    'fields',
+                    'populate',
+                    ...conditionalQueryParams
+                ]),
+                body: {
+                    'application/json': validator.body
+                }
+            },
+            response: documentResponseSchema(validator.document),
+            config: {}
+        },
+        update: {
+            method: 'PUT',
+            path: `/${info.pluralName}/:id`,
+            handler: `${uid}.update`,
+            request: {
+                query: validator.queryParams([
+                    'fields',
+                    'populate',
+                    ...conditionalQueryParams
+                ]),
+                params: {
+                    id: validator.documentID
+                },
+                body: {
+                    'application/json': validator.partialBody
+                }
+            },
+            response: documentResponseSchema(validator.document)
+        },
+        delete: {
+            method: 'DELETE',
+            path: `/${info.pluralName}/:id`,
+            handler: `${uid}.delete`,
+            request: {
+                query: validator.queryParams([
+                    'fields',
+                    'populate',
+                    'filters',
+                    ...conditionalQueryParams
+                ]),
+                params: {
+                    id: validator.documentID
+                }
+            },
+            response: documentResponseSchema(validator.document)
+        }
+    };
+};
+/**
+ * Query params that are conditionally part of this route's contract (and OpenAPI spec)
+ * based on the content type: e.g. locale only for localized types, status only for draft & publish.
+ *
+ * This is separate from the runtime allowlist used when api.rest.strictParams is on
+ * (ALLOWED_QUERY_PARAM_KEYS + registerQueryParam in @strapi/utils). That allowlist is global
+ * (locale and status are always allowed); validate/sanitize then pass them through and the
+ * document service or i18n layer ignores them when not applicable.
+ *
+ * So the two can differ: a non-localized route will not declare "locale" here (OpenAPI says
+ * no locale param), but the runtime allowlist still allows the key and downstream ignores it.
+ * That is intentional: this drives the route contract/docs; the allowlist drives enforcement.
+ */ const getConditionalQueryParams = (schema)=>{
+    const isLocalized = strapi.localization.isLocalizedContentType(schema);
+    const hasDraftAndPublish = contentTypes.hasDraftAndPublish(schema);
+    return [
+        ...isLocalized ? [
+            'locale'
+        ] : [],
+        ...hasDraftAndPublish ? [
+            'status',
+            'publicationFilter',
+            // Deprecated: replaced by `publicationFilter`; kept for OpenAPI/clients still using the boolean.
+            'hasPublishedVersion'
+        ] : []
+    ];
+};
+
+export { createRoutes };
+//# sourceMappingURL=index.mjs.map

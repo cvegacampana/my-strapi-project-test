@@ -1,0 +1,1 @@
+{"version":3,"file":"serialize-json-columns.d.ts","sourceRoot":"","sources":["../../../src/migrations/database/serialize-json-columns.ts"],"names":[],"mappings":"AAEA;;;;;;;GAOG;AACH,eAAO,MAAM,oBAAoB,GAC/B,KAAK,MAAM,CAAC,MAAM,EAAE,GAAG,CAAC,EACxB,MAAM;IAAE,UAAU,CAAC,EAAE,MAAM,CAAC,MAAM,EAAE,GAAG,CAAC,CAAA;CAAE,GAAG,IAAI,GAAG,SAAS,KAC5D,MAAM,CAAC,MAAM,EAAE,GAAG,CAsBpB,CAAC"}

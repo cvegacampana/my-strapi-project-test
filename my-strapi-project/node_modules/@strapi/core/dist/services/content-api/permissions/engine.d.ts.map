@@ -1,0 +1,1 @@
+{"version":3,"file":"engine.d.ts","sourceRoot":"","sources":["../../../../src/services/content-api/permissions/engine.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,MAAM,EAAE,MAAM,qBAAqB,CAAC;AAE7C,KAAK,OAAO,GAAG,UAAU,CAAC,OAAO,MAAM,CAAC,GAAG,CAAC,CAAC,CAAC,CAAC,CAAC;yBAEhC,eAAe,OAAO;AAAtC,wBAAqE"}

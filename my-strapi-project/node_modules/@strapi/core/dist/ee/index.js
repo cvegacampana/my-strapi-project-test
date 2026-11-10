@@ -1,0 +1,291 @@
+'use strict';
+
+var _ = require('lodash');
+var fetch = require('../utils/fetch.js');
+var license = require('./license.js');
+var entitlements$1 = require('./entitlements.js');
+var cron = require('../utils/cron.js');
+
+const ONE_MINUTE = 1000 * 60;
+const ee = {
+    enabled: false,
+    licenseInfo: {
+        isTrial: false
+    },
+    retainedLicense: null,
+    licenseStatus: 'none'
+};
+const disable = (message, status = 'unknown')=>{
+    // Prevent emitting ee.disable if it was already disabled
+    const shouldEmitEvent = ee.enabled !== false;
+    ee.logger?.warn(`${message} Switching to CE.`);
+    // Retain a display-only snapshot (never the key) BEFORE wiping, so the admin panel can
+    // still show which license this instance has and why it is unusable. Guarded on `type`
+    // so a repeat disable() call cannot overwrite the snapshot with an already-wiped one.
+    if (ee.licenseInfo.type) {
+        ee.retainedLicense = _.pick(ee.licenseInfo, [
+            'features',
+            'expireAt',
+            'seats',
+            'type',
+            'isTrial',
+            'subscriptionId',
+            'planPriceId',
+            'renewalDate'
+        ]);
+    }
+    ee.licenseStatus = status;
+    // Only keep the license key and isTrial for potential re-enabling during a later check
+    ee.licenseInfo = _.pick(ee.licenseInfo, [
+        'licenseKey',
+        'isTrial'
+    ]);
+    ee.licenseInfo.isTrial = false;
+    ee.enabled = false;
+    if (shouldEmitEvent) {
+        // Notify EE features that they should be disabled
+        strapi.eventHub.emit('ee.disable');
+    }
+};
+const enable = ()=>{
+    // Prevent emitting ee.enable if it was already enabled
+    const shouldEmitEvent = ee.enabled !== true;
+    ee.enabled = true;
+    ee.licenseStatus = 'active';
+    ee.retainedLicense = null;
+    if (shouldEmitEvent) {
+        // Notify EE features that they should be disabled
+        strapi.eventHub.emit('ee.enable');
+    }
+};
+let initialized = false;
+/**
+ * Optimistically enable EE if the format of the license is valid, only run once.
+ */ const init = (licenseDir, logger)=>{
+    if (initialized) {
+        return;
+    }
+    initialized = true;
+    ee.logger = logger;
+    if (process.env.STRAPI_DISABLE_EE?.toLowerCase() === 'true') {
+        return;
+    }
+    try {
+        const license$1 = process.env.STRAPI_LICENSE || license.readLicense(licenseDir);
+        if (license$1) {
+            ee.licenseInfo = license.verifyLicense(license$1);
+            enable();
+        }
+    } catch (error) {
+        if (error instanceof Error) {
+            disable(error.message);
+        } else {
+            disable('Invalid license.');
+        }
+    }
+};
+/**
+ * Contact the license registry to update the license to its latest state.
+ *
+ * Store the result in database to avoid unecessary requests, and will fallback to that in case of a network failure.
+ */ const onlineUpdate = async ({ strapi: strapi1 })=>{
+    const { get, commit, rollback } = await strapi1.db.transaction();
+    const transaction = get();
+    try {
+        const storedInfo = await strapi1.db?.queryBuilder('strapi::core-store').where({
+            key: 'ee_information'
+        }).select('value').first().transacting(transaction).forUpdate().execute().then((result)=>result ? JSON.parse(result.value) : result);
+        const shouldContactRegistry = (storedInfo?.lastCheckAt ?? 0) < Date.now() - ONE_MINUTE;
+        const result = {
+            lastCheckAt: Date.now()
+        };
+        const fallback = (error)=>{
+            // Whether the registry was unreachable or actually refused the license is only
+            // knowable here, from `shouldFallback`. Record it rather than letting the admin
+            // panel infer it from the presence of a cached license: an instance that has never
+            // reached the registry has no cache to fall back to, and would otherwise be told
+            // its license was refused when the registry was merely unreachable.
+            result.errorKind = error instanceof license.LicenseCheckError && error.shouldFallback ? 'unreachable' : 'rejected';
+            if (error instanceof license.LicenseCheckError && error.shouldFallback && storedInfo?.license) {
+                ee.logger?.warn(`${error.message} The last stored one will be used as a potential fallback.`);
+                result.error = error.message; // record why we fell back so usingCachedLicense is derivable
+                return storedInfo.license;
+            }
+            result.error = error.message;
+            disable(error.message);
+        };
+        if (!ee?.licenseInfo?.licenseKey) {
+            throw new Error('Missing license key.');
+        }
+        const license$1 = shouldContactRegistry ? await license.fetchLicense({
+            strapi: strapi1
+        }, ee.licenseInfo.licenseKey, strapi1.config.get('uuid')).catch(fallback) : storedInfo.license;
+        if (license$1) {
+            try {
+                // Verify license and check if its info changed
+                const newLicenseInfo = license.verifyLicense(license$1);
+                const licenseInfoChanged = !_.isEqual(newLicenseInfo.features, ee.licenseInfo.features) || newLicenseInfo.seats !== ee.licenseInfo.seats || newLicenseInfo.type !== ee.licenseInfo.type;
+                // Store the new license info
+                ee.licenseInfo = newLicenseInfo;
+                const wasEnabled = ee.enabled;
+                validateInfo();
+                // Notify EE features
+                if (licenseInfoChanged && wasEnabled) {
+                    strapi1.eventHub.emit('ee.update');
+                }
+            } catch (error) {
+                if (error instanceof Error) {
+                    disable(error.message);
+                } else {
+                    disable('Invalid license.');
+                }
+            }
+        } else if (!shouldContactRegistry) {
+            disable(storedInfo.error);
+        }
+        if (shouldContactRegistry) {
+            result.license = license$1 ?? null;
+            const query = strapi1.db.queryBuilder('strapi::core-store').transacting(transaction);
+            if (!storedInfo) {
+                query.insert({
+                    key: 'ee_information',
+                    value: JSON.stringify(result)
+                });
+            } else {
+                query.update({
+                    value: JSON.stringify(result)
+                }).where({
+                    key: 'ee_information'
+                });
+            }
+            await query.execute();
+        }
+        await commit();
+    } catch  {
+        // Example of errors: SQLite does not support FOR UPDATE
+        await rollback();
+    }
+};
+const validateInfo = ()=>{
+    if (typeof ee.licenseInfo.expireAt === 'undefined') {
+        throw new Error('Missing license key.');
+    }
+    const expirationTime = new Date(ee.licenseInfo.expireAt).getTime();
+    if (expirationTime < new Date().getTime()) {
+        return disable('License expired.', 'expired');
+    }
+    enable();
+};
+const checkLicense = async ({ strapi: strapi1 })=>{
+    const shouldStayOffline = ee.licenseInfo.type === 'gold' && // This env variable support is temporarily used to ease the migration between online vs offline
+    process.env.STRAPI_DISABLE_LICENSE_PING?.toLowerCase() === 'true';
+    if (!shouldStayOffline) {
+        await onlineUpdate({
+            strapi: strapi1
+        });
+        strapi1.cron.add({
+            onlineUpdate: {
+                task: ()=>onlineUpdate({
+                        strapi: strapi1
+                    }),
+                options: cron.shiftCronExpression('0 0 */12 * * *')
+            }
+        });
+    } else {
+        if (!ee.licenseInfo.expireAt) {
+            return disable('Your license does not have offline support.');
+        }
+        validateInfo();
+    }
+};
+const getTrialEndDate = async ({ strapi: strapi1 })=>{
+    const silentFetch = fetch.createStrapiFetch(strapi1, {
+        logs: false
+    });
+    const res = await silentFetch(`${license.LICENSE_REGISTRY_URI}/api/licenses/${ee.licenseInfo.licenseKey}/trial-countdown`, {
+        method: 'GET',
+        headers: {
+            'Content-Type': 'application/json'
+        }
+    }).catch(()=>{
+        throw new license.LicenseCheckError('Could not proceed to retrieve the trial time left for your license.', true);
+    });
+    const data = await res.json();
+    return data;
+};
+const list = ()=>{
+    return ee.licenseInfo.features?.map((feature)=>typeof feature === 'object' ? feature : {
+            name: feature
+        }) || [];
+};
+const get = (featureName)=>list().find((feature)=>feature.name === featureName);
+const entitlements = entitlements$1.createEntitlementsRegistry();
+var index = Object.freeze({
+    init,
+    checkLicense,
+    getTrialEndDate,
+    get isEE () {
+        return ee.enabled;
+    },
+    get licenseStatus () {
+        return ee.licenseStatus;
+    },
+    /** Display-only; see EE.retainedLicense. Never use for feature gating. */ get retainedLicense () {
+        return ee.retainedLicense;
+    },
+    get seats () {
+        return ee.licenseInfo.seats;
+    },
+    get type () {
+        return ee.licenseInfo.type;
+    },
+    get expireAt () {
+        return ee.licenseInfo.expireAt;
+    },
+    /** Null when the registry does not provide it yet; survives expiry via the retained snapshot. */ get renewalDate () {
+        return ee.licenseInfo.renewalDate ?? ee.retainedLicense?.renewalDate ?? null;
+    },
+    /**
+   * Every feature the current plan supports, in display order, regardless of whether this
+   * license includes it. Falls back to the retained license's type so an expired license
+   * still lists rows. See `PLAN_FEATURE_CATALOG` in `./license`.
+   */ get planFeatureCatalog () {
+        const type = ee.licenseInfo.type ?? ee.retainedLicense?.type;
+        return type && type in license.PLAN_FEATURE_CATALOG ? license.PLAN_FEATURE_CATALOG[type] : [];
+    },
+    get isTrial () {
+        return ee.licenseInfo.isTrial;
+    },
+    get planPriceId () {
+        return ee.licenseInfo.planPriceId;
+    },
+    get subscriptionId () {
+        return ee.licenseInfo.subscriptionId;
+    },
+    features: Object.freeze({
+        list,
+        get,
+        isEnabled: (featureName)=>get(featureName) !== undefined
+    }),
+    entitlements: Object.freeze({
+        register: entitlements.register,
+        // Resolvers are registered during `register()`, before the license is validated, and each
+        // falls back to a built-in default when the feature is absent. Without this gate an
+        // instance whose license was disabled would still report generous limits, which reads as
+        // "these are your granted limits". No license, no entitlements.
+        list: ()=>ee.enabled ? entitlements.list(get) : [],
+        // A lapsed license's limits, from the same resolvers run against its retained feature list,
+        // so a lapsed Plan card and the debug dump carry the defaults and clamps the plan enforced
+        // instead of raw options. Only features the retained license listed are reported.
+        listRetained () {
+            const retainedFeatures = (ee.retainedLicense?.features ?? []).map((feature)=>typeof feature === 'object' ? feature : {
+                    name: feature
+                });
+            const getRetained = (name)=>retainedFeatures.find((feature)=>feature.name === name);
+            return entitlements.list(getRetained).filter((entry)=>getRetained(entry.feature) !== undefined);
+        }
+    })
+});
+
+module.exports = index;
+//# sourceMappingURL=index.js.map

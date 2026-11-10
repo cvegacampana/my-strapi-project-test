@@ -1,0 +1,1 @@
+{"version":3,"file":"koa.d.ts","sourceRoot":"","sources":["../../../src/services/server/koa.ts"],"names":[],"mappings":"AAAA,OAAO,GAAG,MAAM,KAAK,CAAC;AA8CtB,QAAA,MAAM,YAAY,GAAI,8CAKnB;IACD,KAAK,EAAE,OAAO,CAAC;IACf,aAAa,EAAE,MAAM,CAAC;IACtB,WAAW,EAAE,MAAM,CAAC;IACpB,IAAI,EAAE,MAAM,EAAE,CAAC;CAChB,8CASA,CAAC;AAEF,eAAe,YAAY,CAAC"}
